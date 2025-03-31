@@ -1,4 +1,4 @@
-name: Java Linting with PMD and SpotBugs
+name: PMD and SpotBugs Lint
 
 on:
   push:
@@ -7,15 +7,15 @@ on:
     branches: [ master ]
 
 permissions:
-  security-events: write
   contents: read
+  security-events: write
 
 jobs:
-  lint:
+  java-lint:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -24,48 +24,53 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install PMD
+      # ---------------------
+      # PMD SETUP & EXECUTION
+      # ---------------------
+      - name: Install PMD 7.12.0
         run: |
-          curl -sL https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.12.0/pmd-dist-7.12.0-bin.zip -o pmd.zip
-          unzip -q pmd.zip -d pmd
-          echo "PMD installed"
+          cd $HOME
+          wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.12.0/pmd-dist-7.12.0-bin.zip
+          unzip -q pmd-dist-7.12.0-bin.zip
 
       - name: Run PMD
         run: |
           mkdir -p reports/pmd
-          pmd/pmd-bin-7.0.0-rc4/bin/pmd check \
-            --dir src/ \
-            --rulesets category/java/bestpractices.xml \
-            --format sarif > reports/pmd/pmd.sarif
-          echo "PMD SARIF report generated"
+          $HOME/pmd-bin-7.12.0/bin/pmd check \
+            -d ./src \
+            -R rulesets/java/quickstart.xml \
+            -f text > reports/pmd/pmd-report.txt
 
-      - name: Upload PMD SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: reports/pmd/pmd.sarif
-          category: pmd
-
-      - name: Install SpotBugs
+      # -------------------------
+      # SPOTBUGS SETUP & EXECUTION
+      # -------------------------
+      - name: Install SpotBugs 4.8.3
         run: |
-          curl -sL https://github.com/spotbugs/spotbugs/releases/latest/download/spotbugs-4.8.3.zip -o spotbugs.zip
-          unzip -q spotbugs.zip -d spotbugs
-          echo "SpotBugs installed"
+          cd $HOME
+          wget https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz
+          tar -xzf spotbugs-4.8.3.tgz
 
       - name: Compile Java code
         run: |
           mkdir -p target/classes
-          javac -d target/classes $(find src -name "*.java")
+          find src -name "*.java" > sources.txt
+          javac -d target/classes @sources.txt
 
-      - name: Run SpotBugs
+      - name: Run SpotBugs with SARIF output
         run: |
           mkdir -p reports/spotbugs
-          spotbugs/spotbugs-4.8.3/bin/spotbugs \
+          $HOME/spotbugs-4.8.3/bin/spotbugs \
             -textui \
             -sarif:reports/spotbugs/spotbugs.sarif \
-            -low \
             -effort:max \
+            -low \
             target/classes
-          echo "SpotBugs SARIF report generated"
+
+      - name: Upload PMD text report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmd-report
+          path: reports/pmd/pmd-report.txt
 
       - name: Upload SpotBugs SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v2
@@ -73,8 +78,8 @@ jobs:
           sarif_file: reports/spotbugs/spotbugs.sarif
           category: spotbugs
 
-      - name: Upload reports as artifact
+      - name: Upload SpotBugs report as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lint-reports
-          path: reports/
+          name: spotbugs-report
+          path: reports/spotbugs/spotbugs.sarif
