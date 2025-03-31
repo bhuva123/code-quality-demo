@@ -57,7 +57,7 @@ jobs:
           category: spotbugs
 
       - name: Upload PMD & SpotBugs reports as artifact
-        uses: actions/upload-artifact@v3.1.3
+        uses: actions/upload-artifact@v3
         with:
           name: lint-reports
           path: reports/
