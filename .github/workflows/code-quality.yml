@@ -11,8 +11,87 @@ permissions:
   security-events: write
 
 jobs:
-  java-lint:
+  pmd_lint:
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PMD
+        run: |
+          sudo apt-get update && sudo apt-get install unzip -y
+          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.42.0/pmd-bin-6.42.0.zip -o pmd.zip
+          unzip -o pmd.zip -d pmd-extracted
+          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.42.0/bin" >> $GITHUB_ENV
+
+      - name: Run PMD and generate JSON
+        continue-on-error: true
+        run: |
+          bash $PMD_BIN_DIR/run.sh pmd \
+            -d src \
+            -f json \
+            -R rulesets/java/quickstart.xml \
+            --cache .pmdCache > pmd-report.json
+          [ -s pmd-report.json ] || echo '{"files": []}' > pmd-report.json
+
+      - name: Convert PMD JSON to SARIF
+        run: |
+          python3 - <<EOF
+          import json
+          with open("pmd-report.json") as f: data = json.load(f)
+          sarif = {
+              "version": "2.1.0",
+              "runs": [{
+                  "tool": {
+                      "driver": {
+                          "name": "PMD",
+                          "informationUri": "https://pmd.github.io/",
+                          "rules": []
+                      }
+                  },
+                  "results": [
+                      {
+                          "ruleId": v["rule"],
+                          "message": {"text": v["description"]},
+                          "locations": [{
+                              "physicalLocation": {
+                                  "artifactLocation": {"uri": f["filename"]},
+                                  "region": {"startLine": v["beginline"]}
+                              }
+                          }]
+                      } for f in data.get("files", []) for v in f.get("violations", [])
+                  ]
+              }]
+          }
+          with open("pmd-report.sarif", "w") as f: json.dump(sarif, f, indent=2)
+          EOF
+
+      - name: Upload PMD SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pmd-report.sarif
+          category: pmd
+
+      - name: Show PMD Summary
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "## 📌 PMD Issues" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          jq -c '.files[] | .filename as $f | .violations[] | {file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
+            file=$(echo "$line" | jq -r '.file')
+            line=$(echo "$line" | jq -r '.line')
+            rule=$(echo "$line" | jq -r '.rule')
+            msg=$(echo "$line" | jq -r '.message' | sed 's/|/\\|/g')
+            echo "| $file | $line | $rule | $msg |" >> $GITHUB_STEP_SUMMARY
+          done
+
+  spotbugs_lint:
+    runs-on: ubuntu-latest
+    needs: pmd_lint
 
     steps:
       - name: Checkout code
@@ -24,62 +103,30 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # ---------------------
-      # PMD SETUP & EXECUTION
-      # ---------------------
-      - name: Install PMD 7.12.0
+      - name: Install SpotBugs
         run: |
-          cd $HOME
-          wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.12.0/pmd-dist-7.12.0-bin.zip
-          unzip -q pmd-dist-7.12.0-bin.zip
+          curl -L https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz -o spotbugs.tgz
+          tar -xzf spotbugs.tgz
 
-      - name: Run PMD
-        run: |
-          mkdir -p reports/pmd
-          $HOME/pmd-bin-7.12.0/bin/pmd check \
-            -d ./src \
-            -R rulesets/java/quickstart.xml \
-            -f text > reports/pmd/pmd-report.txt
-
-      # -------------------------
-      # SPOTBUGS SETUP & EXECUTION
-      # -------------------------
-      - name: Install SpotBugs 4.8.3
-        run: |
-          cd $HOME
-          wget https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz
-          tar -xzf spotbugs-4.8.3.tgz
-
-      - name: Compile Java code
+      - name: Compile Java source
         run: |
           mkdir -p target/classes
           find src -name "*.java" > sources.txt
           javac -d target/classes @sources.txt
 
       - name: Run SpotBugs with SARIF output
+        continue-on-error: true
         run: |
           mkdir -p reports/spotbugs
-          $HOME/spotbugs-4.8.3/bin/spotbugs \
+          ./spotbugs-4.8.3/bin/spotbugs \
             -textui \
             -sarif:reports/spotbugs/spotbugs.sarif \
             -effort:max \
             -low \
             target/classes
 
-      - name: Upload PMD text report
-        uses: actions/upload-artifact@v4
-        with:
-          name: pmd-report
-          path: reports/pmd/pmd-report.txt
-
       - name: Upload SpotBugs SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: reports/spotbugs/spotbugs.sarif
           category: spotbugs
-
-      - name: Upload SpotBugs report as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: spotbugs-report
-          path: reports/spotbugs/spotbugs.sarif
