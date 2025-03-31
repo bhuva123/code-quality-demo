@@ -1,0 +1,56 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Compile with Maven
+        run: mvn compile
+
+      - name: Run PMD with SARIF
+        uses: pmd/pmd-github-action@v2
+        with:
+          rulesets: 'rulesets/java/basic.xml'
+          sourcePath: 'src/main/java'
+          format: 'sarif'
+          output: 'pmd-report.sarif'
+
+      - name: Upload PMD SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pmd-report.sarif
+          category: pmd
+
+      - name: Run SpotBugs with SARIF
+        uses: spotbugs/spotbugs-github-action@v1
+        with:
+          version: '4.7.3'
+          sourcePath: 'src/main/java'
+          classPath: 'target/classes'
+          outputFormat: 'sarif'
+          outputFile: 'spotbugs-report.sarif'
+
+      - name: Upload SpotBugs SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: spotbugs-report.sarif
+          category: spotbugs
