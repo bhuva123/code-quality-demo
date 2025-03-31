@@ -26,7 +26,7 @@ jobs:
 
       - name: Install PMD
         run: |
-          curl -sL https://github.com/pmd/pmd/releases/latest/download/pmd-bin-7.0.0-rc4.zip -o pmd.zip
+          curl -sL https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.12.0/pmd-dist-7.12.0-bin.zip -o pmd.zip
           unzip -q pmd.zip -d pmd
           echo "PMD installed"
 
