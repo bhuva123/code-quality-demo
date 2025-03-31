@@ -1,4 +1,4 @@
-name: Code Quality Checks
+name: Java Linting with PMD and SpotBugs
 
 on:
   push:
@@ -6,51 +6,59 @@ on:
   pull_request:
     branches: [ master]
 
+permissions:
+  security-events: write  # Needed for uploading SARIF to GitHub
+  actions: read
+  contents: read
+
 jobs:
-  code-quality:
+  lint:
+    name: Lint with PMD and SpotBugs
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v3
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v3
         with:
-          java-version: '17'
           distribution: 'temurin'
-          cache: maven
+          java-version: '17'
 
-      - name: Compile with Maven
-        run: mvn compile
+      - name: Build project with Maven (skip tests)
+        run: mvn clean compile -DskipTests
 
-      - name: Run PMD with SARIF
-        uses: pmd/pmd-github-action@v2
+      - name: Run PMD
+        run: |
+          mvn pmd:pmd pmd:aggregate -Dformat=sarif
+          mkdir -p reports/pmd
+          cp target/site/pmd.xml reports/pmd/
+          cp target/site/pmd.sarif reports/pmd/
+
+      - name: Upload PMD SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v2
         with:
-          rulesets: 'rulesets/java/basic.xml'
-          sourcePath: 'src/main/java'
-          format: 'sarif'
-          output: 'pmd-report.sarif'
-
-      - name: Upload PMD SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: pmd-report.sarif
+          sarif_file: reports/pmd/pmd.sarif
           category: pmd
 
-      - name: Run SpotBugs with SARIF
-        uses: spotbugs/spotbugs-github-action@v1
-        with:
-          version: '4.7.3'
-          sourcePath: 'src/main/java'
-          classPath: 'target/classes'
-          outputFormat: 'sarif'
-          outputFile: 'spotbugs-report.sarif'
+      - name: Run SpotBugs
+        run: |
+          mvn com.github.spotbugs:spotbugs-maven-plugin:4.7.3.0:spotbugs \
+              com.github.spotbugs:spotbugs-maven-plugin:4.7.3.0:spotbugs-report \
+              -Dspotbugs.sarifOutput=true
+          mkdir -p reports/spotbugs
+          cp target/spotbugsXml.xml reports/spotbugs/
+          cp target/spotbugs.sarif reports/spotbugs/
 
-      - name: Upload SpotBugs SARIF
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload SpotBugs SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: spotbugs-report.sarif
+          sarif_file: reports/spotbugs/spotbugs.sarif
           category: spotbugs
+
+      - name: Upload PMD & SpotBugs reports as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lint-reports
+          path: reports/
