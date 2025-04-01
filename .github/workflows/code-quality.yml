@@ -1,187 +1,13 @@
-name: PMD and SpotBugs Lint
+name: SpotBugs CLI with SARIF
 
 on:
   push:
-    branches: [ master ]
+    branches: [main]
   pull_request:
-    branches: [ master ]
-
-permissions:
-  contents: read
-  security-events: write
+    branches: [main]
 
 jobs:
-  pmd_lint:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install PMD
-        run: |
-          sudo apt-get update && sudo apt-get install unzip -y
-          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip -o pmd.zip
-          unzip -o pmd.zip -d pmd-extracted
-          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.55.0/bin" >> $GITHUB_ENV
-
-      - name: Run PMD and generate JSON
-        continue-on-error: true
-        run: |
-          mkdir -p src || true
-          bash $PMD_BIN_DIR/run.sh pmd \
-            -d src \
-            -f json \
-            -R rulesets/java/quickstart.xml \
-            --cache .pmdCache > pmd-report.json || true
-          [ -s pmd-report.json ] || echo '[]' > pmd-report.json
-
-      - name: Convert PMD JSON to SARIF
-        run: |
-          cat > create_sarif.py << 'EOL'
-          #!/usr/bin/env python3
-          import json
-          import sys
-          import os
-
-          try:
-              # Check if the file exists and has content
-              if os.path.exists("pmd-report.json") and os.path.getsize("pmd-report.json") > 0:
-                  with open("pmd-report.json") as f:
-                      try:
-                          data = json.load(f)
-                      except json.JSONDecodeError:
-                          data = []
-              else:
-                  data = []
-          
-              # Initialize SARIF structure
-              sarif = {
-                  "version": "2.1.0",
-                  "runs": [
-                      {
-                          "tool": {
-                              "driver": {
-                                  "name": "PMD",
-                                  "rules": []
-                              }
-                          },
-                          "results": []
-                      }
-                  ]
-              }
-          
-              # Process PMD results
-              rules_dict = {}
-          
-              if isinstance(data, list):
-                  for item in data:
-                      if "violations" in item:
-                          for v in item.get("violations", []):
-                              rule_id = v.get("rule", "unknown-rule")
-                              if rule_id not in rules_dict:
-                                  rules_dict[rule_id] = {
-                                      "id": rule_id,
-                                      "shortDescription": {
-                                          "text": rule_id
-                                      }
-                                  }
-          
-                              sarif["runs"][0]["results"].append({
-                                  "ruleId": rule_id,
-                                  "level": "warning",
-                                  "message": {
-                                      "text": v.get("description", "")
-                                  },
-                                  "locations": [
-                                      {
-                                          "physicalLocation": {
-                                              "artifactLocation": {
-                                                  "uri": item.get("filename", "")
-                                              },
-                                              "region": {
-                                                  "startLine": v.get("beginline", 1)
-                                              }
-                                          }
-                                      }
-                                  ]
-                              })
-              elif isinstance(data, dict) and "files" in data:
-                  for f in data.get("files", []):
-                      for v in f.get("violations", []):
-                          rule_id = v.get("rule", "unknown-rule")
-                          if rule_id not in rules_dict:
-                              rules_dict[rule_id] = {
-                                  "id": rule_id,
-                                  "shortDescription": {
-                                      "text": rule_id
-                                  }
-                              }
-          
-                          sarif["runs"][0]["results"].append({
-                              "ruleId": rule_id,
-                              "level": "warning",
-                              "message": {
-                                  "text": v.get("description", "")
-                              },
-                              "locations": [
-                                  {
-                                      "physicalLocation": {
-                                          "artifactLocation": {
-                                              "uri": f.get("filename", "")
-                                          },
-                                          "region": {
-                                              "startLine": v.get("beginline", 1)
-                                          }
-                                      }
-                                  }
-                              ]
-                          })
-          
-              # Add rules to SARIF
-              sarif["runs"][0]["tool"]["driver"]["rules"] = list(rules_dict.values())
-          
-              # Write SARIF file
-              with open("pmd-report.sarif", "w") as f:
-                  json.dump(sarif, f)
-          
-              print("Successfully created SARIF file")
-          
-          except Exception as e:
-              print(f"Error creating SARIF file: {e}")
-              # Create a minimal valid SARIF file
-              with open("pmd-report.sarif", "w") as f:
-                  json.dump({
-                      "version": "2.1.0",
-                      "runs": [
-                          {
-                              "tool": {
-                                  "driver": {
-                                      "name": "PMD",
-                                      "rules": []
-                                  }
-                              },
-                              "results": []
-                          }
-                      ]
-                  }, f)
-          EOL
-          
-          python3 create_sarif.py
-
-      - name: Debug SARIF Files
-        run: |
-          echo "### PMD SARIF Content ###"
-          cat pmd-report.sarif | head -20
-          echo "..."
-
-      - name: Upload PMD SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: pmd-report.sarif
-          category: pmd
-
-  spotbugs_lint:
+  spotbugs:
     runs-on: ubuntu-latest
 
     steps:
@@ -191,137 +17,33 @@ jobs:
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Install SpotBugs and SARIF plugin
-        run: |
-          curl -L https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz -o spotbugs.tgz
-          tar -xzf spotbugs.tgz
-          mkdir -p spotbugs-4.8.3/plugin
-          curl -L https://github.com/spotbugs/spotbugs-sarif/releases/latest/download/spotbugs-sarif.jar -o spotbugs-4.8.3/plugin/spotbugs-sarif.jar
+      - name: Build the project
+        run: mvn clean package -DskipTests
 
-      - name: Compile Java source
-        continue-on-error: true
+      - name: Download SpotBugs CLI
         run: |
-          mkdir -p target/classes
-          echo "Checking for Java files..."
-          find src -type f -name "*.java" > java_files.txt
-          if [ -s java_files.txt ]; then
-            echo "Java files found, compiling..."
-            cat java_files.txt
-            javac -d target/classes @java_files.txt || echo "⚠️ Compilation errors occurred"
-          else
-            echo "No Java files found"
-            # Create empty class file to avoid empty directory
-            mkdir -p target/classes/com/example
-            cat > target/classes/com/example/EmptyClass.class << 'EOL'
-            ����
-            EOL
-          fi
+          curl -L -o spotbugs.zip https://github.com/spotbugs/spotbugs/releases/download/4.7.3/spotbugs-4.7.3.zip
+          unzip spotbugs.zip
+          mv spotbugs-* spotbugs
+
+      - name: Download SARIF plugin
+        run: |
+          mkdir -p sarif
+          curl -L -o sarif/spotbugs-sarif-plugin.jar https://repo1.maven.org/maven2/com/github/spotbugs/spotbugs-sarif-plugin/0.2.2/spotbugs-sarif-plugin-0.2.2.jar
 
       - name: Run SpotBugs and generate SARIF
-        continue-on-error: true
         run: |
-          mkdir -p reports/spotbugs
-          chmod +x ./spotbugs-4.8.3/bin/spotbugs
-          
-          # Create a minimal valid SARIF file as a fallback
-          cat > reports/spotbugs/spotbugs.sarif << 'EOL'
-          {"version":"2.1.0","runs":[{"tool":{"driver":{"name":"SpotBugs","rules":[]}},"results":[]}]}
-          EOL
-          
-          # Only run SpotBugs if we have class files
-          if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
-            echo "Class files found, running SpotBugs..."
-            # Run SpotBugs and redirect output to a temporary file
-            ./spotbugs-4.8.3/bin/spotbugs \
-              -textui \
-              -pluginList spotbugs-4.8.3/plugin/spotbugs-sarif.jar \
-              -sarif:reports/spotbugs/spotbugs-raw.sarif \
-              -effort:max \
-              -low \
-              target/classes || echo "⚠️ SpotBugs returned non-zero exit"
-          else
-            echo "No class files found to analyze"
-          fi
-          
-          # Check if the raw SARIF file was created
-          if [ -f reports/spotbugs/spotbugs-raw.sarif ]; then
-            # Process the SARIF file to ensure compatibility with GitHub
-            cat > fix_spotbugs_sarif.py << 'EOL'
-            #!/usr/bin/env python3
-            import json
-            import os
-          
-            try:
-                if os.path.exists("reports/spotbugs/spotbugs-raw.sarif"):
-                    with open("reports/spotbugs/spotbugs-raw.sarif", "r") as f:
-                        data = json.load(f)
-          
-                    # Create a new minimal structure
-                    sarif = {
-                        "version": "2.1.0",
-                        "runs": [
-                            {
-                                "tool": {
-                                    "driver": {
-                                        "name": "SpotBugs",
-                                        "rules": []
-                                    }
-                                },
-                                "results": []
-                            }
-                        ]
-                    }
-          
-                    # Copy rules and results if they exist
-                    if "runs" in data and data["runs"]:
-                        for run in data["runs"]:
-                            if "tool" in run and "driver" in run["tool"]:
-                                driver = run["tool"]["driver"]
-                                if "rules" in driver:
-                                    # Copy each rule, ensuring it has the minimal required structure
-                                    for rule in driver["rules"]:
-                                        if "id" in rule:
-                                            rule_copy = {
-                                                "id": rule["id"],
-                                                "shortDescription": rule.get("shortDescription", {"text": rule["id"]})
-                                            }
-                                            sarif["runs"][0]["tool"]["driver"]["rules"].append(rule_copy)
-          
-                            if "results" in run:
-                                # Copy each result, ensuring it has the minimal required structure
-                                for result in run["results"]:
-                                    if "ruleId" in result and "locations" in result:
-                                        result_copy = {
-                                            "ruleId": result["ruleId"],
-                                            "level": result.get("level", "warning"),
-                                            "message": result.get("message", {"text": ""}),
-                                            "locations": result["locations"]
-                                        }
-                                        sarif["runs"][0]["results"].append(result_copy)
-          
-                    with open("reports/spotbugs/spotbugs.sarif", "w") as f:
-                        json.dump(sarif, f)
-                    print("Successfully processed SpotBugs SARIF file")
-            except Exception as e:
-                print(f"Error processing SpotBugs SARIF: {e}")
-            EOL
-          
-            python3 fix_spotbugs_sarif.py
-          else
-            echo "SpotBugs raw SARIF file not created, using fallback"
-          fi
+          mkdir -p reports
+          find target -name "*.class" > classes.list
+          ./spotbugs/bin/spotbugs -textui -pluginList sarif/spotbugs-sarif-plugin.jar \
+            -sarifOutput reports/spotbugs.sarif \
+            -effort:max -low -projectName MyProject \
+            @classes.list
 
-      - name: Debug SARIF Files
-        run: |
-          echo "### SpotBugs SARIF Content ###"
-          cat reports/spotbugs/spotbugs.sarif | head -20
-          echo "..."
-
-      - name: Upload SpotBugs SARIF to GitHub
+      - name: Upload SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: reports/spotbugs/spotbugs.sarif
-          category: spotbugs
+          sarif_file: reports/spotbugs.sarif
