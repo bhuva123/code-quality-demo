@@ -41,7 +41,7 @@ jobs:
         run: echo "PMD_BIN=$HOME/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
-        continue-on-error: true
+        shell: bash
         run: |
           $PMD_BIN check \
             --no-progress \
@@ -49,7 +49,15 @@ jobs:
             -R rulesets/java/quickstart.xml \
             -f json \
             --report-file pmd-report.json
-          
+          PMD_EXIT=$?
+
+          if [ "$PMD_EXIT" -eq 4 ]; then
+            echo "PMD found violations (exit code 4), continuing..."
+          elif [ "$PMD_EXIT" -ne 0 ]; then
+            echo "PMD encountered an unexpected error (exit code $PMD_EXIT)"
+            exit $PMD_EXIT
+          fi
+
           if [ ! -s pmd-report.json ]; then
             echo '{"files": []}' > pmd-report.json
           fi
