@@ -43,16 +43,24 @@ jobs:
         run: echo "PMD_BIN=$HOME/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis (multi-dir)
-        continue-on-error: true
         run: |
           SRC_DIRS=$(find . -type d -name src -not -path "*/test/*" | paste -sd "," -)
           echo "Detected Java source directories: $SRC_DIRS"
+          
           $PMD_BIN check \
             --no-progress \
             -d "$SRC_DIRS" \
             -R rulesets/java/quickstart.xml \
             -f json \
-            --report-file pmd-report.json
+            --report-file pmd-report.json || PMD_EXIT=$?
+
+          # Suppress PMD exit code 4 (violations found)
+          if [ "$PMD_EXIT" = "4" ]; then
+            echo "PMD completed with violations (exit code 4). Suppressing error."
+          elif [ -n "$PMD_EXIT" ] && [ "$PMD_EXIT" -ne 0 ]; then
+            echo "PMD failed with exit code $PMD_EXIT"
+            exit $PMD_EXIT
+          fi
 
           if [ ! -s pmd-report.json ]; then
             echo '{"files": []}' > pmd-report.json
