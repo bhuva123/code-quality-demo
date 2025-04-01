@@ -144,7 +144,7 @@ jobs:
             echo "No Java files found to compile"
           fi
 
-      - name: Debug: List compiled class files
+      - name: "Debug - List compiled class files"
         run: |
           echo "📦 Compiled classes:"
           find target/classes -name "*.class" || echo "No class files found"
