@@ -1,4 +1,4 @@
-name: PMD and SpotBugs Lint POC
+name: PMD Lint with SARIF Summary
 
 on:
   push:
@@ -24,21 +24,19 @@ jobs:
       - name: Install PMD
         run: |
           sudo apt-get update && sudo apt-get install unzip -y
-          PMD_URL="https://github.com/pmd/pmd/releases/download/pmd-${PMD_VERSION}/pmd-bin-${PMD_VERSION}.zip"
+          PMD_URL="https://github.com/pmd/pmd/releases/download/pmd_releases%2F${PMD_VERSION}/pmd-dist-${PMD_VERSION}-bin.zip"
           curl -L "$PMD_URL" -o pmd.zip
-          unzip -o pmd.zip -d pmd-extracted
-          chmod +x pmd-extracted/pmd-bin-${PMD_VERSION}/bin/pmd
+          unzip -o pmd.zip -d $HOME
+          echo "PMD_BIN=$HOME/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
         continue-on-error: true
-        shell: bash
         run: |
-          export PMD_PATH="$(pwd)/pmd-extracted/pmd-bin-${PMD_VERSION}/bin"
-          export PATH="$PMD_PATH:$PATH"
-          pmd check --no-progress \
-            --dir src \
-            --format json \
-            --rulesets category/java/bestpractices.xml \
+          $PMD_BIN check \
+            --no-progress \
+            -d src \
+            -R rulesets/java/quickstart.xml \
+            -f json \
             --report-file pmd-report.json
           
           if [ ! -s pmd-report.json ]; then
