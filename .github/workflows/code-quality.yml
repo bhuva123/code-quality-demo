@@ -12,6 +12,7 @@ permissions:
 
 env:
   PMD_VERSION: "7.12.0"
+  PMD_CACHE_KEY: "pmd-${{ runner.os }}-${{ env.PMD_VERSION }}"
 
 jobs:
   pmd_lint:
@@ -21,13 +22,24 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install PMD
+      - name: Restore PMD from cache
+        id: cache-pmd
+        uses: actions/cache@v3
+        with:
+          path: ~/.pmd/pmd-bin-${{ env.PMD_VERSION }}
+          key: ${{ env.PMD_CACHE_KEY }}
+
+      - name: Install PMD (if not cached)
+        if: steps.cache-pmd.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update && sudo apt-get install unzip -y
+          mkdir -p ~/.pmd
           PMD_URL="https://github.com/pmd/pmd/releases/download/pmd_releases%2F${PMD_VERSION}/pmd-dist-${PMD_VERSION}-bin.zip"
-          curl -L "$PMD_URL" -o pmd.zip
-          unzip -o pmd.zip -d $HOME
-          echo "PMD_BIN=$HOME/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
+          curl -L "$PMD_URL" -o ~/.pmd/pmd.zip
+          unzip -o ~/.pmd/pmd.zip -d ~/.pmd
+          chmod +x ~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd
+
+      - name: Set PMD binary path
+        run: echo "PMD_BIN=~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
         continue-on-error: true
