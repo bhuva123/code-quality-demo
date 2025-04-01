@@ -63,9 +63,11 @@ jobs:
               for item in data:
                   if "violations" in item:
                       for violation in item.get("violations", []):
-                          rules_set.add(violation.get("rule", ""))
+                          rule_id = violation.get("rule", "")
+                          rules_set.add(rule_id)
                           results.append({
-                              "ruleId": violation.get("rule", ""),
+                              "ruleId": rule_id,
+                              "level": "warning",
                               "message": {"text": violation.get("description", "")},
                               "locations": [{
                                   "physicalLocation": {
@@ -78,9 +80,11 @@ jobs:
               # Handle object format
               for f in data.get("files", []):
                   for v in f.get("violations", []):
-                      rules_set.add(v.get("rule", ""))
+                      rule_id = v.get("rule", "")
+                      rules_set.add(rule_id)
                       results.append({
-                          "ruleId": v.get("rule", ""),
+                          "ruleId": rule_id,
+                          "level": "warning",
                           "message": {"text": v.get("description", "")},
                           "locations": [{
                               "physicalLocation": {
@@ -91,14 +95,16 @@ jobs:
                       })
           
           # Create rules array from the set
-          rules = [{"id": rule, "shortDescription": {"text": rule}} for rule in rules_set if rule]
+          rules = [{"id": rule, "shortDescription": {"text": rule}, "defaultConfiguration": {"level": "warning"}} for rule in rules_set if rule]
           
           sarif = {
               "version": "2.1.0",
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
               "runs": [{
                   "tool": {
                       "driver": {
                           "name": "PMD",
+                          "version": "6.55.0",
                           "informationUri": "https://pmd.github.io/",
                           "rules": rules
                       }
@@ -115,7 +121,8 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: pmd-report.sarif
-          category: pmd
+          category: pmd-results
+          wait-for-processing: true
 
   spotbugs_lint:
     runs-on: ubuntu-latest
@@ -163,16 +170,93 @@ jobs:
               target/classes || echo "⚠️ SpotBugs returned non-zero exit"
           else
             echo "No class files found to analyze"
-            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+            echo '{
+              "version": "2.1.0",
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+              "runs": [{
+                "tool": {
+                  "driver": {
+                    "name": "SpotBugs",
+                    "version": "4.8.3",
+                    "informationUri": "https://spotbugs.github.io/",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }]
+            }' > reports/spotbugs/spotbugs.sarif
           fi
 
-          # Ensure SARIF file exists
+          # Ensure SARIF file exists and has proper format for security scanning
           if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
-            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+            echo '{
+              "version": "2.1.0",
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+              "runs": [{
+                "tool": {
+                  "driver": {
+                    "name": "SpotBugs",
+                    "version": "4.8.3",
+                    "informationUri": "https://spotbugs.github.io/",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }]
+            }' > reports/spotbugs/spotbugs.sarif
           fi
+          
+          # Validate the SARIF file to ensure it's properly formatted
+          python3 - <<EOF
+          import json
+          import os
+          
+          if os.path.exists("reports/spotbugs/spotbugs.sarif"):
+              try:
+                  with open("reports/spotbugs/spotbugs.sarif", "r") as f:
+                      data = json.load(f)
+          
+                  # Ensure $schema is present
+                  if "$schema" not in data:
+                      data["$schema"] = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
+          
+                  # Ensure tool.driver has version
+                  for run in data.get("runs", []):
+                      tool = run.get("tool", {})
+                      driver = tool.get("driver", {})
+                      if "version" not in driver:
+                          driver["version"] = "4.8.3"
+                      if "informationUri" not in driver:
+                          driver["informationUri"] = "https://spotbugs.github.io/"
+          
+                  # Write back the potentially fixed file
+                  with open("reports/spotbugs/spotbugs.sarif", "w") as f:
+                      json.dump(data, f, indent=2)
+          
+              except Exception as e:
+                  print(f"Error validating SpotBugs SARIF: {e}")
+                  # Create a valid empty SARIF file
+                  with open("reports/spotbugs/spotbugs.sarif", "w") as f:
+                      json.dump({
+                          "version": "2.1.0",
+                          "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                          "runs": [{
+                              "tool": {
+                                  "driver": {
+                                      "name": "SpotBugs",
+                                      "version": "4.8.3",
+                                      "informationUri": "https://spotbugs.github.io/",
+                                      "rules": []
+                                  }
+                              },
+                              "results": []
+                          }]
+                      }, f, indent=2)
+          EOF
 
       - name: Upload SpotBugs SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: reports/spotbugs/spotbugs.sarif
-          category: spotbugs
+          category: spotbugs-results
+          wait-for-processing: true
