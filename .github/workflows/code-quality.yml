@@ -157,22 +157,43 @@ jobs:
           if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
             chmod +x ./spotbugs-4.8.3/bin/spotbugs
           
+            # Run SpotBugs and capture the output
             ./spotbugs-4.8.3/bin/spotbugs \
               -textui \
               -sarif:reports/spotbugs/spotbugs.sarif \
               -effort:max \
               -low \
               target/classes || echo "⚠️ SpotBugs returned non-zero exit"
+          
+            # Check if SARIF file exists and has valid content
+            if [ -f reports/spotbugs/spotbugs.sarif ]; then
+              # Ensure SARIF output is not combined with console output
+              # Sometimes SpotBugs adds additional text to the SARIF file
+              grep -q "\"version\":\"2.1.0\"" reports/spotbugs/spotbugs.sarif
+              if [ $? -eq 0 ]; then
+                # Clean up any text after the JSON content
+                sed -i -E 's/\}\]\}\}.*/}]}/' reports/spotbugs/spotbugs.sarif
+                # Check JSON validity
+                jq '.' reports/spotbugs/spotbugs.sarif > /dev/null 2>&1 || {
+                  echo "Invalid JSON in SARIF file, recreating..."
+                  echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+                }
+              else
+                echo "SARIF file doesn't contain valid JSON, creating new one"
+                echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+              fi
+            else
+              echo "No SARIF file generated, creating new one"
+              echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+            fi
           else
             echo "No class files found - creating empty SARIF report"
             echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
           fi
 
-          # Ensure SARIF exists
-          if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
-            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
-            echo "📄 Created empty SARIF to avoid upload failure"
-          fi
+          # Debug: Show SARIF content
+          echo "📄 SpotBugs SARIF content:"
+          cat reports/spotbugs/spotbugs.sarif
 
       - name: Create SpotBugs summary
         if: always()
@@ -181,23 +202,53 @@ jobs:
           echo "## 🐞 SpotBugs Issues" >> $GITHUB_STEP_SUMMARY
           
           if [ -f "reports/spotbugs/spotbugs.sarif" ]; then
-            issues_count=$(jq '.runs[0].results | length' reports/spotbugs/spotbugs.sarif)
-          
-            if [ "$issues_count" -gt 0 ]; then
-              echo "Found $issues_count issues" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "| File | Line | Issue |" >> $GITHUB_STEP_SUMMARY
-              echo "|------|------|-------|" >> $GITHUB_STEP_SUMMARY
-          
-              jq -c '.runs[0].results[] | {uri: .locations[0].physicalLocation.artifactLocation.uri, line: .locations[0].physicalLocation.region.startLine, message: .message.text}' reports/spotbugs/spotbugs.sarif | \
-              while read -r issue; do
-                file=$(echo "$issue" | jq -r '.uri // "-"')
-                line=$(echo "$issue" | jq -r '.line // "-"')
-                msg=$(echo "$issue" | jq -r '.message // "-"' | sed 's/|/\\|/g')
-                echo "| $file | $line | $msg |" >> $GITHUB_STEP_SUMMARY
-              done
+            # First, ensure the SARIF file is valid JSON
+            jq '.' reports/spotbugs/spotbugs.sarif > /dev/null 2>&1
+            if [ $? -ne 0 ]; then
+              echo "⚠️ Invalid JSON in SARIF file" >> $GITHUB_STEP_SUMMARY
+              echo "No issues could be parsed" >> $GITHUB_STEP_SUMMARY
             else
-              echo "No issues found" >> $GITHUB_STEP_SUMMARY
+              # Now safely count the issues
+              issues_count=$(jq '.runs[0].results | length // 0' reports/spotbugs/spotbugs.sarif)
+          
+              if [ "$issues_count" -gt 0 ]; then
+                echo "Found $issues_count issues" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "| File | Line | Severity | Issue |" >> $GITHUB_STEP_SUMMARY
+                echo "|------|------|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          
+                jq -c '.runs[0].results[] | {
+                  uri: .locations[0].physicalLocation.artifactLocation.uri, 
+                  line: .locations[0].physicalLocation.region.startLine, 
+                  level: .level,
+                  rule: .ruleId,
+                  message: .message.text
+                }' reports/spotbugs/spotbugs.sarif | \
+                while read -r issue; do
+                  file=$(echo "$issue" | jq -r '.uri // "-"')
+                  line=$(echo "$issue" | jq -r '.line // "-"')
+                  level=$(echo "$issue" | jq -r '.level // "note"')
+                  rule=$(echo "$issue" | jq -r '.rule // "-"')
+                  msg=$(echo "$issue" | jq -r '.message // "-"' | sed 's/|/\\|/g')
+          
+                  # Format severity with appropriate icon
+                  case "$level" in
+                    "error")
+                      severity="🔴 Error"
+                      ;;
+                    "warning")
+                      severity="🟠 Warning"
+                      ;;
+                    *)
+                      severity="🔵 Note"
+                      ;;
+                  esac
+          
+                  echo "| $file | $line | $severity | [$rule] $msg |" >> $GITHUB_STEP_SUMMARY
+                done
+              else
+                echo "No issues found" >> $GITHUB_STEP_SUMMARY
+              fi
             fi
           else
             echo "No SpotBugs report generated" >> $GITHUB_STEP_SUMMARY
