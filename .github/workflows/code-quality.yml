@@ -24,8 +24,8 @@ jobs:
       - name: Install PMD
         run: |
           sudo apt-get update && sudo apt-get install unzip -y
-          PMD_ZIP_URL="https://github.com/pmd/pmd/releases/download/pmd_releases%2F${PMD_VERSION}/pmd-bin-${PMD_VERSION}.zip"
-          curl -L "$PMD_ZIP_URL" -o pmd.zip
+          PMD_URL="https://github.com/pmd/pmd/releases/download/pmd-${PMD_VERSION}/pmd-bin-${PMD_VERSION}.zip"
+          curl -L "$PMD_URL" -o pmd.zip
           unzip -o pmd.zip -d pmd-extracted
           chmod +x pmd-extracted/pmd-bin-${PMD_VERSION}/bin/pmd
 
