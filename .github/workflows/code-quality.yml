@@ -75,6 +75,44 @@ jobs:
             -output spotbugs-output/spotbugs.sarif \
             target/classes
 
+      - name: Convert PMD JSON to SARIF
+        run: |
+          python3 -c '
+          import json
+          def convert_pmd_to_sarif(pmd_json_path, sarif_output_path):
+              with open(pmd_json_path, "r") as f:
+                  pmd_data = json.load(f)
+              if not pmd_data or "files" not in pmd_data:
+                  pmd_data = {"files": []}
+              sarif_report = {
+                  "version": "2.1.0",
+                  "runs": [{
+                      "tool": {
+                          "driver": {
+                              "name": "PMD",
+                              "informationUri": "https://pmd.github.io/",
+                              "rules": []
+                          }
+                      },
+                      "results": [
+                          {
+                              "ruleId": v["rule"],
+                              "message": {"text": v["description"]},
+                              "locations": [{
+                                  "physicalLocation": {
+                                      "artifactLocation": {"uri": f["filename"]},
+                                      "region": {"startLine": v["beginline"]}
+                                  }
+                              }]
+                          } for f in pmd_data["files"] for v in f.get("violations", [])
+                      ]
+                  }]
+              }
+              with open(sarif_output_path, "w") as f:
+                  json.dump(sarif_report, f, indent=2)
+          convert_pmd_to_sarif("pmd-report.json", "pmd-report.sarif")
+          '
+
       - name: Add Fingerprints and Combine SARIF Reports
         run: |
           python3 -c '
@@ -87,22 +125,8 @@ jobs:
           def load(path):
               return json.load(open(path)) if os.path.exists(path) else {"runs": []}
 
-          # Patch PMD SARIF
-          def patch_pmd(pmd_sarif):
-              for result in pmd_sarif.get("runs", [])[0].get("results", []):
-                  loc = result["locations"][0]["physicalLocation"]
-                  file = loc["artifactLocation"]["uri"]
-                  line = loc["region"]["startLine"]
-                  rule = result.get("ruleId", "unknown")
-                  message = result["message"]["text"]
-                  result["partialFingerprints"] = {
-                      "default": fingerprint(file, line, rule, message)
-                  }
-              return pmd_sarif
-
-          # Patch SpotBugs SARIF
-          def patch_spotbugs(spot_sarif):
-              for run in spot_sarif.get("runs", []):
+          def patch_results(runs):
+              for run in runs:
                   for result in run.get("results", []):
                       loc = result["locations"][0]["physicalLocation"]
                       file = loc["artifactLocation"]["uri"]
@@ -112,17 +136,17 @@ jobs:
                       result["partialFingerprints"] = {
                           "default": fingerprint(file, line, rule, message)
                       }
-              return spot_sarif
+              return runs
 
           pmd = load("pmd-report.sarif")
-          spotbugs = load("spotbugs-output/spotbugs.sarif")
+          spot = load("spotbugs-output/spotbugs.sarif")
 
-          patched_pmd = patch_pmd(pmd)
-          patched_spot = patch_spotbugs(spotbugs)
+          pmd["runs"] = patch_results(pmd.get("runs", []))
+          spot["runs"] = patch_results(spot.get("runs", []))
 
           combined = {
               "version": "2.1.0",
-              "runs": patched_pmd.get("runs", []) + patched_spot.get("runs", [])
+              "runs": pmd.get("runs", []) + spot.get("runs", [])
           }
 
           with open("combined.sarif", "w") as f:
