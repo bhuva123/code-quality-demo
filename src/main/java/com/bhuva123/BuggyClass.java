@@ -1,42 +1,46 @@
 package com.bhuva123;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class BuggyClass {
 
-    public static String stringField;
-    private List items = new ArrayList(); // Raw type - PMD and SpotBugs should flag this
+    public static final String stringField = ""; // Made it final since it's static
+    private final List<String> items = new ArrayList<>(); // Added generic type parameter
 
     public void nullCheck(String input) {
-        if (input.equals("test")) { // Potential NPE - Should be detected
+        if (input != null && input.equals("test")) { // Added null check to prevent NPE
             System.out.println("Input is test");
         }
     }
 
     public void unusedVariable() {
-        int unused = 10; // Unused variable - Should be detected
+        // Removed unused variable
         System.out.println("Method with unused variable");
     }
 
-    public List getItems() {
-        return items; // Returns reference to mutable object - SpotBugs should flag this
+    public List<String> getItems() {
+        return Collections.unmodifiableList(items); // Return unmodifiable view to protect internal state
     }
 
     public boolean compareStrings(String a, String b) {
-        if (a == b) { // Should use equals() - PMD should flag this
+        if (a != null && a.equals(b)) { // Fixed string comparison to use equals() with null check
             return true;
         }
         return false;
     }
 
     public void switchWithoutDefault(int value) {
-        switch (value) { // Missing default case - Should be detected
+        switch (value) { // Added default case
             case 1:
                 System.out.println("One");
                 break;
             case 2:
                 System.out.println("Two");
+                break;
+            default:
+                System.out.println("Other value");
                 break;
         }
     }
