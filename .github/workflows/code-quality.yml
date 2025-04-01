@@ -99,7 +99,6 @@ jobs:
           
           sarif = {
               "version": "2.1.0",
-              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
               "runs": [{
                   "tool": {
                       "driver": {
@@ -172,7 +171,6 @@ jobs:
             echo "No class files found to analyze"
             echo '{
               "version": "2.1.0",
-              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
               "runs": [{
                 "tool": {
                   "driver": {
@@ -191,7 +189,6 @@ jobs:
           if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
             echo '{
               "version": "2.1.0",
-              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
               "runs": [{
                 "tool": {
                   "driver": {
@@ -216,9 +213,9 @@ jobs:
                   with open("reports/spotbugs/spotbugs.sarif", "r") as f:
                       data = json.load(f)
           
-                  # Ensure $schema is present
-                  if "$schema" not in data:
-                      data["$schema"] = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
+                  # Remove $schema if present
+                  if "$schema" in data:
+                      del data["$schema"]
           
                   # Ensure tool.driver has version
                   for run in data.get("runs", []):
@@ -239,7 +236,6 @@ jobs:
                   with open("reports/spotbugs/spotbugs.sarif", "w") as f:
                       json.dump({
                           "version": "2.1.0",
-                          "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
                           "runs": [{
                               "tool": {
                                   "driver": {
