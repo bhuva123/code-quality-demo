@@ -74,25 +74,6 @@ jobs:
           sarif_file: pmd-report.sarif
           category: pmd
 
-      - name: Show PMD Summary
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "## 📌 PMD Issues" >> $GITHUB_STEP_SUMMARY
-          echo "| File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
-          if [ -s pmd-report.json ]; then
-            jq -c '.files[] | .filename as $f | .violations[] | {file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
-              file=$(echo "$line" | jq -r '.file')
-              line_num=$(echo "$line" | jq -r '.line')
-              rule=$(echo "$line" | jq -r '.rule')
-              msg=$(echo "$line" | jq -r '.message' | sed 's/|/\\|/g')
-              echo "| $file | $line_num | $rule | $msg |" >> $GITHUB_STEP_SUMMARY
-            done
-          else
-            echo "| - | - | - | No issues found |" >> $GITHUB_STEP_SUMMARY
-          fi
-
   spotbugs_lint:
     runs-on: ubuntu-latest
 
@@ -113,31 +94,12 @@ jobs:
           mkdir -p spotbugs-4.8.3/plugin
           curl -L https://github.com/spotbugs/spotbugs-sarif/releases/latest/download/spotbugs-sarif.jar -o spotbugs-4.8.3/plugin/spotbugs-sarif.jar
 
-      - name: Ensure source and target folders exist
-        run: |
-          mkdir -p src/test/java/test
-          mkdir -p target/classes
-
-      - name: Add Java file with known issue (test)
-        run: |
-          cat <<EOF > src/test/java/test/DeadStoreExample.java
-          package test;
-          public class DeadStoreExample {
-              public static void main(String[] args) {
-                  int x = 42; // dead store
-                  System.out.println("Hello");
-              }
-          }
-          EOF
-
       - name: Compile Java source
-        continue-on-error: true
         run: |
+          mkdir -p target/classes
           find src -type f -name "*.java" > java_files.txt
           if [ -s java_files.txt ]; then
             javac -d target/classes $(cat java_files.txt)
-          else
-            echo "No Java files found to compile"
           fi
 
       - name: Run SpotBugs and generate SARIF
@@ -161,14 +123,3 @@ jobs:
         with:
           sarif_file: reports/spotbugs/spotbugs.sarif
           category: spotbugs
-
-      - name: SpotBugs Summary
-        if: always()
-        run: |
-          echo "## 🐞 SpotBugs Issues" >> $GITHUB_STEP_SUMMARY
-          if [ -f reports/spotbugs/spotbugs.sarif ]; then
-            count=$(jq '.runs[0].results | length' reports/spotbugs/spotbugs.sarif)
-            echo "Found $count issues" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "No SARIF file found." >> $GITHUB_STEP_SUMMARY
-          fi
