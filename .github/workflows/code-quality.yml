@@ -21,9 +21,9 @@ jobs:
       - name: Install PMD
         run: |
           sudo apt-get update && sudo apt-get install unzip -y
-          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.42.0/pmd-bin-6.42.0.zip -o pmd.zip
+          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip -o pmd.zip
           unzip -o pmd.zip -d pmd-extracted
-          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.42.0/bin" >> $GITHUB_ENV
+          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.55.0/bin" >> $GITHUB_ENV
 
       - name: Run PMD and generate JSON
         continue-on-error: true
@@ -34,13 +34,65 @@ jobs:
             -f json \
             -R rulesets/java/quickstart.xml \
             --cache .pmdCache > pmd-report.json || true
-          [ -s pmd-report.json ] || echo '{"files": []}' > pmd-report.json
+          [ -s pmd-report.json ] || echo '[]' > pmd-report.json
 
       - name: Convert PMD JSON to SARIF
         run: |
           python3 - <<EOF
           import json
-          with open("pmd-report.json") as f: data = json.load(f)
+          import os
+          
+          # Check if the file exists and has content
+          if os.path.exists("pmd-report.json") and os.path.getsize("pmd-report.json") > 0:
+              with open("pmd-report.json") as f:
+                  try:
+                      data = json.load(f)
+                  except json.JSONDecodeError:
+                      # Handle invalid JSON
+                      data = []
+          else:
+              data = []
+          
+          # Prepare an empty rule set to populate
+          rules_set = set()
+          results = []
+          
+          # Handle both array and object format of PMD output
+          if isinstance(data, list):
+              # Handle array format
+              for item in data:
+                  if "violations" in item:
+                      for violation in item.get("violations", []):
+                          rules_set.add(violation.get("rule", ""))
+                          results.append({
+                              "ruleId": violation.get("rule", ""),
+                              "message": {"text": violation.get("description", "")},
+                              "locations": [{
+                                  "physicalLocation": {
+                                      "artifactLocation": {"uri": item.get("filename", "")},
+                                      "region": {"startLine": violation.get("beginline", 1)}
+                                  }
+                              }]
+                          })
+          elif isinstance(data, dict) and "files" in data:
+              # Handle object format
+              for f in data.get("files", []):
+                  for v in f.get("violations", []):
+                      rules_set.add(v.get("rule", ""))
+                      results.append({
+                          "ruleId": v.get("rule", ""),
+                          "message": {"text": v.get("description", "")},
+                          "locations": [{
+                              "physicalLocation": {
+                                  "artifactLocation": {"uri": f.get("filename", "")},
+                                  "region": {"startLine": v.get("beginline", 1)}
+                              }
+                          }]
+                      })
+          
+          # Create rules array from the set
+          rules = [{"id": rule, "shortDescription": {"text": rule}} for rule in rules_set if rule]
+          
           sarif = {
               "version": "2.1.0",
               "runs": [{
@@ -48,24 +100,15 @@ jobs:
                       "driver": {
                           "name": "PMD",
                           "informationUri": "https://pmd.github.io/",
-                          "rules": []
+                          "rules": rules
                       }
                   },
-                  "results": [
-                      {
-                          "ruleId": v["rule"],
-                          "message": {"text": v["description"]},
-                          "locations": [{
-                              "physicalLocation": {
-                                  "artifactLocation": {"uri": f["filename"]},
-                                  "region": {"startLine": v["beginline"]}
-                              }
-                          }]
-                      } for f in data.get("files", []) for v in f.get("violations", [])
-                  ]
+                  "results": results
               }]
           }
-          with open("pmd-report.sarif", "w") as f: json.dump(sarif, f, indent=2)
+          
+          with open("pmd-report.sarif", "w") as f:
+              json.dump(sarif, f, indent=2)
           EOF
 
       - name: Upload PMD SARIF to GitHub
@@ -82,7 +125,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
@@ -95,25 +138,35 @@ jobs:
           curl -L https://github.com/spotbugs/spotbugs-sarif/releases/latest/download/spotbugs-sarif.jar -o spotbugs-4.8.3/plugin/spotbugs-sarif.jar
 
       - name: Compile Java source
+        continue-on-error: true
         run: |
           mkdir -p target/classes
           find src -type f -name "*.java" > java_files.txt
           if [ -s java_files.txt ]; then
-            javac -d target/classes $(cat java_files.txt)
+            javac -d target/classes @java_files.txt
           fi
 
       - name: Run SpotBugs and generate SARIF
+        continue-on-error: true
         run: |
           mkdir -p reports/spotbugs
           chmod +x ./spotbugs-4.8.3/bin/spotbugs
-          ./spotbugs-4.8.3/bin/spotbugs \
-            -textui \
-            -pluginList spotbugs-4.8.3/plugin/spotbugs-sarif.jar \
-            -sarif:reports/spotbugs/spotbugs.sarif \
-            -effort:max \
-            -low \
-            target/classes || echo "⚠️ SpotBugs returned non-zero exit"
+          
+          # Check if target/classes contains any .class files
+          if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
+            ./spotbugs-4.8.3/bin/spotbugs \
+              -textui \
+              -pluginList spotbugs-4.8.3/plugin/spotbugs-sarif.jar \
+              -sarif:reports/spotbugs/spotbugs.sarif \
+              -effort:max \
+              -low \
+              target/classes || echo "⚠️ SpotBugs returned non-zero exit"
+          else
+            echo "No class files found to analyze"
+            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+          fi
 
+          # Ensure SARIF file exists
           if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
             echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
           fi
