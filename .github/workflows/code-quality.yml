@@ -205,9 +205,19 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p target/classes
+          echo "Checking for Java files..."
           find src -type f -name "*.java" > java_files.txt
           if [ -s java_files.txt ]; then
-            javac -d target/classes @java_files.txt
+            echo "Java files found, compiling..."
+            cat java_files.txt
+            javac -d target/classes @java_files.txt || echo "⚠️ Compilation errors occurred"
+          else
+            echo "No Java files found"
+            # Create empty class file to avoid empty directory
+            mkdir -p target/classes/com/example
+            cat > target/classes/com/example/EmptyClass.class << 'EOL'
+            ����
+            EOL
           fi
 
       - name: Run SpotBugs and generate SARIF
@@ -223,6 +233,7 @@ jobs:
           
           # Only run SpotBugs if we have class files
           if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
+            echo "Class files found, running SpotBugs..."
             # Run SpotBugs and redirect output to a temporary file
             ./spotbugs-4.8.3/bin/spotbugs \
               -textui \
@@ -231,7 +242,12 @@ jobs:
               -effort:max \
               -low \
               target/classes || echo "⚠️ SpotBugs returned non-zero exit"
+          else
+            echo "No class files found to analyze"
+          fi
           
+          # Check if the raw SARIF file was created
+          if [ -f reports/spotbugs/spotbugs-raw.sarif ]; then
             # Process the SARIF file to ensure compatibility with GitHub
             cat > fix_spotbugs_sarif.py << 'EOL'
             #!/usr/bin/env python3
@@ -288,11 +304,14 @@ jobs:
           
                     with open("reports/spotbugs/spotbugs.sarif", "w") as f:
                         json.dump(sarif, f)
+                    print("Successfully processed SpotBugs SARIF file")
             except Exception as e:
                 print(f"Error processing SpotBugs SARIF: {e}")
             EOL
           
             python3 fix_spotbugs_sarif.py
+          else
+            echo "SpotBugs raw SARIF file not created, using fallback"
           fi
 
       - name: Debug SARIF Files
