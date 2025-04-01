@@ -1,4 +1,4 @@
-name: PMD and SpotBugs Lint
+name: PMD and SpotBugs Lint POC
 
 on:
   push:
