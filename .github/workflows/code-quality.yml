@@ -1,4 +1,4 @@
-name: PMD Lint with SARIF Summary
+name: PMD and SpotBugs Lint with Unified Summary
 
 on:
   push:
@@ -36,6 +36,7 @@ jobs:
           curl -L "$PMD_URL" -o ~/.pmd/pmd.zip
           unzip -o ~/.pmd/pmd.zip -d ~/.pmd
           chmod +x ~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd
+
       - name: Set PMD binary path
         run: echo "PMD_BIN=$HOME/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
@@ -48,74 +49,70 @@ jobs:
             -R rulesets/java/quickstart.xml \
             -f json \
             --report-file pmd-report.json
-          
+
           if [ ! -s pmd-report.json ]; then
             echo '{"files": []}' > pmd-report.json
           fi
-      - name: Convert PMD JSON to SARIF using Python
+
+      - name: Build Project for SpotBugs
+        run: mvn clean compile -DskipTests
+
+      - name: Run SpotBugs with SARIF Output
+        continue-on-error: true
+        run: |
+          mkdir -p spotbugs-output
+          curl -L https://repo1.maven.org/maven2/com/github/spotbugs/spotbugs/4.8.3/spotbugs-4.8.3.zip -o spotbugs.zip
+          unzip -o spotbugs.zip -d spotbugs-dist
+          chmod +x spotbugs-dist/spotbugs-4.8.3/bin/spotbugs
+
+          spotbugs-dist/spotbugs-4.8.3/bin/spotbugs \
+            -textui \
+            -sarif \
+            -output spotbugs-output/spotbugs.sarif \
+            target/classes
+
+      - name: Combine SARIF Reports
         run: |
           python3 -c '
           import json
-          
-          def convert_pmd_to_sarif(pmd_json_path, sarif_output_path):
-              with open(pmd_json_path, "r") as f:
-                  pmd_data = json.load(f)
-          
-              if not pmd_data or "files" not in pmd_data:
-                  pmd_data = {"files": []}
-          
-              sarif_report = {
-                  "version": "2.1.0",
-                  "runs": [
-                      {
-                          "tool": {
-                              "driver": {
-                                  "name": "PMD",
-                                  "informationUri": "https://pmd.github.io/",
-                                  "rules": []
-                              }
-                          },
-                          "results": [
-                              {
-                                  "ruleId": violation["rule"],
-                                  "message": {"text": violation["description"]},
-                                  "locations": [{
-                                      "physicalLocation": {
-                                          "artifactLocation": {"uri": file["filename"]},
-                                          "region": {"startLine": violation["beginline"]}
-                                      }
-                                  }]
-                              } for file in pmd_data["files"] for violation in file.get("violations", [])
-                          ]
-                      }
-                  ]
-              }
-          
-              with open(sarif_output_path, "w") as f:
-                  json.dump(sarif_report, f, indent=4)
-          
-          convert_pmd_to_sarif("pmd-report.json", "pmd-report.sarif")
+          def load(path): return json.load(open(path)) if os.path.exists(path) else {"runs": []}
+          import os
+          pmd = load("pmd-report.sarif")
+          spotbugs = load("spotbugs-output/spotbugs.sarif")
+          combined = {"version": "2.1.0", "runs": pmd.get("runs", []) + spotbugs.get("runs", [])}
+          with open("combined.sarif", "w") as f: json.dump(combined, f, indent=2)
           '
-      - name: Upload SARIF report to GitHub
+
+      - name: Upload Combined SARIF report
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: pmd-report.sarif
+          sarif_file: combined.sarif
 
-      - name: Format PMD output for job summary
+      - name: Unified Summary for PMD + SpotBugs
         continue-on-error: true
         if: always()
         run: |
-          echo "## 📌 PMD Report" >> $GITHUB_STEP_SUMMARY
+          echo "## 🧪 Code Quality Report (PMD + SpotBugs)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔹 Linting Issues Found" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
-          
-          jq -c '.files[] | .filename as $f | .violations[] | {file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
+          echo "| Tool | File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          # PMD
+          jq -c '.files[] | .filename as $f | .violations[] | {tool: "PMD", file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
             file=$(echo "$line" | jq -r '.file')
             line_number=$(echo "$line" | jq -r '.line')
             rule=$(echo "$line" | jq -r '.rule')
             message=$(echo "$line" | jq -r '.message' | sed 's/|/\\|/g')
-            echo "| $file | $line_number | $rule | $message |" >> $GITHUB_STEP_SUMMARY
+            echo "| PMD | $file | $line_number | $rule | $message |" >> $GITHUB_STEP_SUMMARY
           done
+
+          # SpotBugs
+          if [ -f spotbugs-output/spotbugs.sarif ]; then
+            jq -c '.runs[].results[] | {tool: "SpotBugs", file: .locations[0].physicalLocation.artifactLocation.uri, line: .locations[0].physicalLocation.region.startLine, rule: .ruleId, message: .message.text}' spotbugs-output/spotbugs.sarif | while read -r line; do
+              file=$(echo "$line" | jq -r '.file')
+              line_number=$(echo "$line" | jq -r '.line')
+              rule=$(echo "$line" | jq -r '.rule')
+              message=$(echo "$line" | jq -r '.message' | sed 's/|/\\|/g')
+              echo "| SpotBugs | $file | $line_number | $rule | $message |" >> $GITHUB_STEP_SUMMARY
+            done
+          fi
