@@ -23,12 +23,13 @@ jobs:
           sudo apt-get update && sudo apt-get install unzip -y
           curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.42.0/pmd-bin-6.42.0.zip -o pmd.zip
           unzip -o pmd.zip -d pmd-extracted
-          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.42.0/bin" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
         continue-on-error: true  # Ensures violations don’t break the job
+        shell: bash
         run: |
-          bash $PMD_BIN_DIR/run.sh pmd -d src -f json -R rulesets/java/quickstart.xml --cache .pmdCache > pmd-report.json
+          export PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.42.0/bin
+          ${PMD_BIN_DIR}/run.sh pmd -d src -f json -R rulesets/java/quickstart.xml --cache .pmdCache > pmd-report.json
           if [ ! -s pmd-report.json ]; then
             echo '{"files": []}' > pmd-report.json  # Prevents jq errors if no issues found
           fi
