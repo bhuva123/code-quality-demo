@@ -108,13 +108,31 @@ jobs:
           curl -L https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz -o spotbugs.tgz
           tar -xzf spotbugs.tgz
 
+      - name: Add Java file with known issue (test)
+        run: |
+          mkdir -p src/test
+          cat <<EOF > src/test/DeadStoreExample.java
+          package test;
+
+          public class DeadStoreExample {
+              public static void main(String[] args) {
+                  int x = 42; // dead store
+                  System.out.println("Hello");
+              }
+          }
+          EOF
+
       - name: Compile Java source
         run: |
           mkdir -p target/classes
-          find src -name "*.java" > sources.txt
-          javac -d target/classes @sources.txt
+          javac -d target/classes $(find src -type f -name "*.java")
 
-      - name: Run SpotBugs with SARIF output
+      - name: Debug: List compiled class files
+        run: |
+          echo "📦 Compiled classes:"
+          find target/classes -name "*.class"
+
+      - name: Run SpotBugs and generate SARIF
         run: |
           mkdir -p reports/spotbugs
           chmod +x ./spotbugs-4.8.3/bin/spotbugs
@@ -124,13 +142,25 @@ jobs:
             -sarif:reports/spotbugs/spotbugs.sarif \
             -effort:max \
             -low \
-            target/classes || echo "SpotBugs failed or returned no results"
+            target/classes || echo "⚠️ SpotBugs returned non-zero exit"
 
           # Ensure SARIF exists
           if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
             echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
             echo "📄 Created empty SARIF to avoid upload failure"
           fi
+
+      - name: Optional Debug: Show SpotBugs XML
+        run: |
+          ./spotbugs-4.8.3/bin/spotbugs \
+            -textui \
+            -effort:max \
+            -low \
+            -xml:withMessages \
+            -output spotbugs-debug.xml \
+            target/classes
+          echo "🔍 SpotBugs XML Report:"
+          cat spotbugs-debug.xml || true
 
       - name: Upload SpotBugs SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
