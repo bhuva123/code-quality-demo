@@ -1,7 +1,4 @@
-- name: List compiled class files
-    run: |
-      echo "📦 Compiled classes:"
-      find target/classes -name "*.class" || echo "No class files found"name: PMD and SpotBugs Lint
+name: PMD and SpotBugs Lint
 
 on:
   push:
@@ -31,7 +28,7 @@ jobs:
       - name: Run PMD and generate JSON
         continue-on-error: true
         run: |
-          mkdir -p src || true  # Create src directory if it doesn't exist
+          mkdir -p src || true
           bash $PMD_BIN_DIR/run.sh pmd \
             -d src \
             -f json \
@@ -84,7 +81,6 @@ jobs:
           echo "## 📌 PMD Issues" >> $GITHUB_STEP_SUMMARY
           echo "| File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
-
           if [ -s pmd-report.json ]; then
             jq -c '.files[] | .filename as $f | .violations[] | {file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
               file=$(echo "$line" | jq -r '.file')
@@ -99,7 +95,6 @@ jobs:
 
   spotbugs_lint:
     runs-on: ubuntu-latest
-    # Removed dependency on pmd_lint to allow parallel execution
 
     steps:
       - name: Checkout code
@@ -111,24 +106,22 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install SpotBugs
+      - name: Install SpotBugs and SARIF plugin
         run: |
           curl -L https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz -o spotbugs.tgz
           tar -xzf spotbugs.tgz
+          mkdir -p spotbugs-4.8.3/plugin
+          curl -L https://github.com/spotbugs/spotbugs-sarif/releases/latest/download/spotbugs-sarif.jar -o spotbugs-4.8.3/plugin/spotbugs-sarif.jar
 
-      # Create src directory if it doesn't exist
-      - name: Ensure source directories exist
+      - name: Ensure source and target folders exist
         run: |
-          mkdir -p src/main/java
-          mkdir -p src/test/java
+          mkdir -p src/test/java/test
           mkdir -p target/classes
 
       - name: Add Java file with known issue (test)
         run: |
-          mkdir -p src/test/java/test
           cat <<EOF > src/test/java/test/DeadStoreExample.java
           package test;
-
           public class DeadStoreExample {
               public static void main(String[] args) {
                   int x = 42; // dead store
@@ -147,232 +140,35 @@ jobs:
             echo "No Java files found to compile"
           fi
 
-      - name: Debug - Show raw SpotBugs XML
-        if: always()
-        continue-on-error: true
-        run: |
-          if [ -f "reports/spotbugs/spotbugs.xml" ]; then
-            echo "📋 SpotBugs XML output sample (first 30 lines):"
-            head -n 30 reports/spotbugs/spotbugs.xml
-          
-            echo "Total findings in XML:"
-            grep -c "<BugInstance" reports/spotbugs/spotbugs.xml || echo "0"
-          else
-            echo "No SpotBugs XML file found"
-          fi
-
-      - name: Run SpotBugs with XML output
-        continue-on-error: true
+      - name: Run SpotBugs and generate SARIF
         run: |
           mkdir -p reports/spotbugs
-          
-          if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
-            chmod +x ./spotbugs-4.8.3/bin/spotbugs
-          
-            # Run SpotBugs with XML output
-            ./spotbugs-4.8.3/bin/spotbugs \
-              -textui \
-              -xml:withMessages \
-              -output reports/spotbugs/spotbugs.xml \
-              -effort:max \
-              -low \
-              target/classes || echo "⚠️ SpotBugs returned non-zero exit"
-          
-            # Check if XML file exists and has content
-            if [ -f reports/spotbugs/spotbugs.xml ] && [ -s reports/spotbugs/spotbugs.xml ]; then
-              echo "SpotBugs XML report generated successfully"
-          
-              # Convert XML to SARIF using Python
-              python3 - <<EOF > reports/spotbugs/spotbugs.sarif
-  import xml.etree.ElementTree as ET
-  import json
-  import sys
-  import os
+          chmod +x ./spotbugs-4.8.3/bin/spotbugs
+          ./spotbugs-4.8.3/bin/spotbugs \
+            -textui \
+            -pluginList spotbugs-4.8.3/plugin/spotbugs-sarif.jar \
+            -sarif:reports/spotbugs/spotbugs.sarif \
+            -effort:max \
+            -low \
+            target/classes || echo "⚠️ SpotBugs returned non-zero exit"
 
-def convert_spotbugs_to_sarif():
-  # Check if XML file exists
-  xml_file = 'reports/spotbugs/spotbugs.xml'
-  if not os.path.exists(xml_file):
-    return create_empty_sarif()
-
-  try:
-    # Parse the XML file
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-    
-    # Create SARIF structure
-    sarif = {
-    "version": "2.1.0",
-    "runs": [{
-      "tool": {
-        "driver": {
-          "name": "SpotBugs",
-          "informationUri": "https://spotbugs.github.io/",
-          "rules": []
-        }
-      },
-      "results": []
-    }]
-  }
-
-    # Process each BugInstance
-    rule_map = {}
-    for bug in root.findall('.//BugInstance'):
-      bug_type = bug.get('type')
-
-      # Store rule info if not already stored
-      if bug_type not in rule_map:
-        rule_map[bug_type] = len(sarif["runs"][0]["tool"]["driver"]["rules"])
-        rule_info = {
-        "id": bug_type,
-        "shortDescription": {
-          "text": bug.find('ShortMessage').text if bug.find('ShortMessage') is not None else bug_type
-        }
-      }
-        if bug.find('LongMessage') is not None:
-          rule_info["fullDescription"] = {"text": bug.find('LongMessage').text}
-
-        sarif["runs"][0]["tool"]["driver"]["rules"].append(rule_info)
-      
-      # Get file and line information
-      source_line = None
-      source_path = None
-      source_elem = bug.find('.//SourceLine')
-      if source_elem is not None:
-        if source_elem.get('start') is not None:
-          source_line = int(source_elem.get('start'))
-        if source_elem.get('sourcepath') is not None:
-          source_path = source_elem.get('sourcepath')
-
-      # Add the result
-      result = {
-      "ruleId": bug_type,
-      "ruleIndex": rule_map[bug_type],
-      "level": "warning",
-      "message": {
-        "text": bug.find('LongMessage').text if bug.find('LongMessage') is not None else
-                  bug.find('ShortMessage').text if bug.find('ShortMessage') is not None else
-                  "SpotBugs issue: " + bug_type
-      },
-      "locations": [{
-        "physicalLocation": {
-          "artifactLocation": {
-            "uri": source_path if source_path else "unknown"
-          }
-        }
-      }]
-    }
-
-      # Add line information if available
-      if source_line is not None:
-        result["locations"][0]["physicalLocation"]["region"] = {
-        "startLine": source_line
-      }
-
-      sarif["runs"][0]["results"].append(result)
-    
-    return sarif
-  except Exception as e:
-    print(f"Error converting SpotBugs XML to SARIF: {str(e)}", file=sys.stderr)
-        return create_empty_sarif()
-
-def create_empty_sarif():
-    return {
-        "version": "2.1.0",
-    "runs": [{
-      "tool": {
-        "driver": {
-          "name": "SpotBugs",
-          "informationUri": "https://spotbugs.github.io/"
-        }
-      },
-      "results": []
-    }]
-}
-
-# Convert and print the result
-  sarif_output = convert_spotbugs_to_sarif()
-  print(json.dumps(sarif_output, indent=2))
-  EOF
-  else
-  echo "SpotBugs XML report not generated or empty"
-echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
-            fi
-          else
-            echo "No class files found - creating empty SARIF report"
-            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
-          fi
-          
-          # Make sure the SARIF file exists
           if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
             echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
           fi
-          
-          # Debug: Show first 300 characters of SARIF content
-          echo "📄 SpotBugs SARIF content (first 300 chars):"
-          head -c 300 reports/spotbugs/spotbugs.sarif
 
-      - name: Create SpotBugs summary
+      - name: Upload SpotBugs SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/spotbugs/spotbugs.sarif
+          category: spotbugs
+
+      - name: SpotBugs Summary
         if: always()
-        continue-on-error: true
         run: |
           echo "## 🐞 SpotBugs Issues" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "reports/spotbugs/spotbugs.sarif" ]; then
-            # First, ensure the SARIF file is valid JSON
-            jq '.' reports/spotbugs/spotbugs.sarif > /dev/null 2>&1
-  if [ $? -ne 0 ]; then
-  echo "⚠️ Invalid JSON in SARIF file" >> $GITHUB_STEP_SUMMARY
-  echo "No issues could be parsed" >> $GITHUB_STEP_SUMMARY
-  else
-  # Now safely count the issues
-  issues_count=$(jq '.runs[0].results | length // 0' reports/spotbugs/spotbugs.sarif)
-  
-  if [ "$issues_count" -gt 0 ]; then
-  echo "Found $issues_count issues" >> $GITHUB_STEP_SUMMARY
-  echo "" >> $GITHUB_STEP_SUMMARY
-  echo "| File | Line | Severity | Issue |" >> $GITHUB_STEP_SUMMARY
-  echo "|------|------|----------|-------|" >> $GITHUB_STEP_SUMMARY
-  
-  jq -c '.runs[0].results[] | {
-uri: .locations[0].physicalLocation.artifactLocation.uri,
-line: .locations[0].physicalLocation.region.startLine,
-level: .level,
-rule: .ruleId,
-message: .message.text
-}' reports/spotbugs/spotbugs.sarif | \
-                while read -r issue; do
-                  file=$(echo "$issue" | jq -r '.uri // "-"')
-  line=$(echo "$issue" | jq -r '.line // "-"')
-  level=$(echo "$issue" | jq -r '.level // "note"')
-  rule=$(echo "$issue" | jq -r '.rule // "-"')
-  msg=$(echo "$issue" | jq -r '.message // "-"' | sed 's/|/\\|/g')
-  
-  # Format severity with appropriate icon
-  case "$level" in
-  "error")
-  severity="🔴 Error"
-  ;;
-  "warning")
-  severity="🟠 Warning"
-  ;;
-  *)
-  severity="🔵 Note"
-  ;;
-  esac
-  
-  echo "| $file | $line | $severity | [$rule] $msg |" >> $GITHUB_STEP_SUMMARY
-  done
-  else
-  echo "No issues found" >> $GITHUB_STEP_SUMMARY
-  fi
-  fi
-  else
-  echo "No SpotBugs report generated" >> $GITHUB_STEP_SUMMARY
-  fi
-
-- name: Upload SpotBugs SARIF to GitHub
-  uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: reports/spotbugs/spotbugs.sarif
-    category: spotbugs
+          if [ -f reports/spotbugs/spotbugs.sarif ]; then
+            count=$(jq '.runs[0].results | length' reports/spotbugs/spotbugs.sarif)
+            echo "Found $count issues" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No SARIF file found." >> $GITHUB_STEP_SUMMARY
+          fi
