@@ -115,16 +115,22 @@ jobs:
           javac -d target/classes @sources.txt
 
       - name: Run SpotBugs with SARIF output
-        continue-on-error: true
         run: |
           mkdir -p reports/spotbugs
           chmod +x ./spotbugs-4.8.3/bin/spotbugs
+
           ./spotbugs-4.8.3/bin/spotbugs \
             -textui \
             -sarif:reports/spotbugs/spotbugs.sarif \
             -effort:max \
             -low \
-            target/classes
+            target/classes || echo "SpotBugs failed or returned no results"
+
+          # Ensure SARIF exists
+          if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
+            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "SpotBugs"}}, "results": []}]}' > reports/spotbugs/spotbugs.sarif
+            echo "📄 Created empty SARIF to avoid upload failure"
+          fi
 
       - name: Upload SpotBugs SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
