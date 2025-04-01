@@ -1,4 +1,4 @@
-name: PMD and SpotBugs Lint with Unified Summary and Quality Gate
+name: PMD and SpotBugs Lint with Fingerprints and Quality Gate
 
 on:
   push:
@@ -12,8 +12,8 @@ permissions:
 
 env:
   PMD_VERSION: "7.12.0"
-  SPOTBUGS_VERSION: "4.9.3"
-  VIOLATION_THRESHOLD: 20
+  SPOTBUGS_VERSION: "4.8.3"
+  VIOLATION_THRESHOLD: 10
 
 jobs:
   code_lint:
@@ -75,59 +75,65 @@ jobs:
             -output spotbugs-output/spotbugs.sarif \
             target/classes
 
-      - name: Convert PMD JSON to SARIF
+      - name: Add Fingerprints and Combine SARIF Reports
         run: |
           python3 -c '
-          import json
-          def convert_pmd_to_sarif(pmd_json_path, sarif_output_path):
-              with open(pmd_json_path, "r") as f:
-                  pmd_data = json.load(f)
-              if not pmd_data or "files" not in pmd_data:
-                  pmd_data = {"files": []}
-              sarif_report = {
-                  "version": "2.1.0",
-                  "runs": [{
-                      "tool": {
-                          "driver": {
-                              "name": "PMD",
-                              "informationUri": "https://pmd.github.io/",
-                              "rules": []
-                          }
-                      },
-                      "results": [
-                          {
-                              "ruleId": v["rule"],
-                              "message": {"text": v["description"]},
-                              "locations": [{
-                                  "physicalLocation": {
-                                      "artifactLocation": {"uri": f["filename"]},
-                                      "region": {"startLine": v["beginline"]}
-                                  }
-                              }]
-                          } for f in pmd_data["files"] for v in f.get("violations", [])
-                      ]
-                  }]
-              }
-              with open(sarif_output_path, "w") as f:
-                  json.dump(sarif_report, f, indent=4)
-          convert_pmd_to_sarif("pmd-report.json", "pmd-report.sarif")
-          '
+          import json, hashlib, os
 
-      - name: Combine SARIF Reports
-        run: |
-          python3 -c '
-          import json, os
-          def load(path): return json.load(open(path)) if os.path.exists(path) else {"runs": []}
+          def fingerprint(file, line, rule, message):
+              base = f"{file}:{line}:{rule}:{message}"
+              return hashlib.sha256(base.encode()).hexdigest()
+
+          def load(path):
+              return json.load(open(path)) if os.path.exists(path) else {"runs": []}
+
+          # Patch PMD SARIF
+          def patch_pmd(pmd_sarif):
+              for result in pmd_sarif.get("runs", [])[0].get("results", []):
+                  loc = result["locations"][0]["physicalLocation"]
+                  file = loc["artifactLocation"]["uri"]
+                  line = loc["region"]["startLine"]
+                  rule = result.get("ruleId", "unknown")
+                  message = result["message"]["text"]
+                  result["partialFingerprints"] = {
+                      "default": fingerprint(file, line, rule, message)
+                  }
+              return pmd_sarif
+
+          # Patch SpotBugs SARIF
+          def patch_spotbugs(spot_sarif):
+              for run in spot_sarif.get("runs", []):
+                  for result in run.get("results", []):
+                      loc = result["locations"][0]["physicalLocation"]
+                      file = loc["artifactLocation"]["uri"]
+                      line = loc["region"]["startLine"]
+                      rule = result.get("ruleId", "unknown")
+                      message = result["message"]["text"]
+                      result["partialFingerprints"] = {
+                          "default": fingerprint(file, line, rule, message)
+                      }
+              return spot_sarif
+
           pmd = load("pmd-report.sarif")
           spotbugs = load("spotbugs-output/spotbugs.sarif")
-          combined = {"version": "2.1.0", "runs": pmd.get("runs", []) + spotbugs.get("runs", [])}
-          with open("combined.sarif", "w") as f: json.dump(combined, f, indent=2)
+
+          patched_pmd = patch_pmd(pmd)
+          patched_spot = patch_spotbugs(spotbugs)
+
+          combined = {
+              "version": "2.1.0",
+              "runs": patched_pmd.get("runs", []) + patched_spot.get("runs", [])
+          }
+
+          with open("combined.sarif", "w") as f:
+              json.dump(combined, f, indent=2)
           '
 
       - name: Upload Combined SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: combined.sarif
+          category: "pmd-spotbugs-lint"
 
       - name: 🧪 Unified Markdown Summary (PMD + SpotBugs)
         continue-on-error: true
