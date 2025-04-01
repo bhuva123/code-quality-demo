@@ -15,167 +15,89 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Install PMD
         run: |
           sudo apt-get update && sudo apt-get install unzip -y
-          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip -o pmd.zip
+          curl -L https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.42.0/pmd-bin-6.42.0.zip -o pmd.zip
           unzip -o pmd.zip -d pmd-extracted
-          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.55.0/bin" >> $GITHUB_ENV
+          echo "PMD_BIN_DIR=$(pwd)/pmd-extracted/pmd-bin-6.42.0/bin" >> $GITHUB_ENV
 
-      - name: Run PMD and generate JSON
-        continue-on-error: true
+      - name: Run PMD Static Analysis
+        continue-on-error: true  # Ensures violations don’t break the job
         run: |
-          mkdir -p src || true
-          bash $PMD_BIN_DIR/run.sh pmd \
-            -d src \
-            -f json \
-            -R rulesets/java/quickstart.xml \
-            --cache .pmdCache > pmd-report.json || true
-          [ -s pmd-report.json ] || echo '[]' > pmd-report.json
+          bash $PMD_BIN_DIR/run.sh pmd -d src -f json -R rulesets/java/quickstart.xml --cache .pmdCache > pmd-report.json
+          if [ ! -s pmd-report.json ]; then
+            echo '{"files": []}' > pmd-report.json  # Prevents jq errors if no issues found
+          fi
 
-      - name: Convert PMD JSON to SARIF
+      - name: Convert PMD JSON to SARIF using Python
         run: |
-          cat > create_sarif.py << 'EOL'
-          #!/usr/bin/env python3
+          python3 -c '
           import json
-          import sys
-          import os
-
-          try:
-              # Check if the file exists and has content
-              if os.path.exists("pmd-report.json") and os.path.getsize("pmd-report.json") > 0:
-                  with open("pmd-report.json") as f:
-                      try:
-                          data = json.load(f)
-                      except json.JSONDecodeError:
-                          data = []
-              else:
-                  data = []
           
-              # Initialize SARIF structure
-              sarif = {
+          def convert_pmd_to_sarif(pmd_json_path, sarif_output_path):
+              with open(pmd_json_path, "r") as f:
+                  pmd_data = json.load(f)
+          
+              if not pmd_data or "files" not in pmd_data:
+                  pmd_data = {"files": []}  # Ensure valid structure
+          
+              sarif_report = {
                   "version": "2.1.0",
                   "runs": [
                       {
                           "tool": {
                               "driver": {
                                   "name": "PMD",
+                                  "informationUri": "https://pmd.github.io/",
                                   "rules": []
                               }
                           },
-                          "results": []
+                          "results": [
+                              {
+                                  "ruleId": violation["rule"],
+                                  "message": {"text": violation["description"]},
+                                  "locations": [{
+                                      "physicalLocation": {
+                                          "artifactLocation": {"uri": file["filename"]},
+                                          "region": {"startLine": violation["beginline"]}
+                                      }
+                                  }]
+                              } for file in pmd_data["files"] for violation in file.get("violations", [])
+                          ]
                       }
                   ]
               }
           
-              # Process PMD results
-              rules_dict = {}
+              with open(sarif_output_path, "w") as f:
+                  json.dump(sarif_report, f, indent=4)
           
-              if isinstance(data, list):
-                  for item in data:
-                      if "violations" in item:
-                          for v in item.get("violations", []):
-                              rule_id = v.get("rule", "unknown-rule")
-                              if rule_id not in rules_dict:
-                                  rules_dict[rule_id] = {
-                                      "id": rule_id,
-                                      "shortDescription": {
-                                          "text": rule_id
-                                      }
-                                  }
-          
-                              sarif["runs"][0]["results"].append({
-                                  "ruleId": rule_id,
-                                  "level": "warning",
-                                  "message": {
-                                      "text": v.get("description", "")
-                                  },
-                                  "locations": [
-                                      {
-                                          "physicalLocation": {
-                                              "artifactLocation": {
-                                                  "uri": item.get("filename", "")
-                                              },
-                                              "region": {
-                                                  "startLine": v.get("beginline", 1)
-                                              }
-                                          }
-                                      }
-                                  ]
-                              })
-              elif isinstance(data, dict) and "files" in data:
-                  for f in data.get("files", []):
-                      for v in f.get("violations", []):
-                          rule_id = v.get("rule", "unknown-rule")
-                          if rule_id not in rules_dict:
-                              rules_dict[rule_id] = {
-                                  "id": rule_id,
-                                  "shortDescription": {
-                                      "text": rule_id
-                                  }
-                              }
-          
-                          sarif["runs"][0]["results"].append({
-                              "ruleId": rule_id,
-                              "level": "warning",
-                              "message": {
-                                  "text": v.get("description", "")
-                              },
-                              "locations": [
-                                  {
-                                      "physicalLocation": {
-                                          "artifactLocation": {
-                                              "uri": f.get("filename", "")
-                                          },
-                                          "region": {
-                                              "startLine": v.get("beginline", 1)
-                                          }
-                                      }
-                                  }
-                              ]
-                          })
-          
-              # Add rules to SARIF
-              sarif["runs"][0]["tool"]["driver"]["rules"] = list(rules_dict.values())
-          
-              # Write SARIF file
-              with open("pmd-report.sarif", "w") as f:
-                  json.dump(sarif, f)
-          
-              print("Successfully created SARIF file")
-          
-          except Exception as e:
-              print(f"Error creating SARIF file: {e}")
-              # Create a minimal valid SARIF file
-              with open("pmd-report.sarif", "w") as f:
-                  json.dump({
-                      "version": "2.1.0",
-                      "runs": [
-                          {
-                              "tool": {
-                                  "driver": {
-                                      "name": "PMD",
-                                      "rules": []
-                                  }
-                              },
-                              "results": []
-                          }
-                      ]
-                  }, f)
-          EOL
-          python3 create_sarif.py
+          convert_pmd_to_sarif("pmd-report.json", "pmd-report.sarif")
+          '
 
-      - name: Debug SARIF Files
-        run: |
-          echo "### PMD SARIF Content ###"
-          cat pmd-report.sarif | head -20
-          echo "..."
-
-      - name: Upload PMD SARIF to GitHub
+      - name: Upload SARIF report to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: pmd-report.sarif
-          category: pmd
+
+      - name: Format PMD output for job summary
+        continue-on-error: true  # Prevent failure if jq errors occur
+        if: always()
+        run: |
+          echo "## 📌 PMD Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔹 Linting Issues Found" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Line | Rule | Message |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
+          
+          jq -c '.files[] | .filename as $f | .violations[] | {file: $f, line: .beginline, rule: .rule, message: .description}' pmd-report.json | while read -r line; do
+            file=$(echo "$line" | jq -r '.file')
+            line_number=$(echo "$line" | jq -r '.line')
+            rule=$(echo "$line" | jq -r '.rule')
+            message=$(echo "$line" | jq -r '.message' | sed 's/|/\\|/g')  # Escape pipes for Markdown
+            echo "| $file | $line_number | $rule | $message |" >> $GITHUB_STEP_SUMMARY
+          done
