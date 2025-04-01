@@ -118,6 +118,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p reports/spotbugs
+          chmod +x ./spotbugs-4.8.3/bin/spotbugs
           ./spotbugs-4.8.3/bin/spotbugs \
             -textui \
             -sarif:reports/spotbugs/spotbugs.sarif \
