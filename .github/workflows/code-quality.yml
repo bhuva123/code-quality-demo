@@ -38,90 +38,148 @@ jobs:
 
       - name: Convert PMD JSON to SARIF
         run: |
-          python3 - <<EOF
+          cat > create_sarif.py << 'EOL'
+          #!/usr/bin/env python3
           import json
+          import sys
           import os
+
+          try:
+              # Check if the file exists and has content
+              if os.path.exists("pmd-report.json") and os.path.getsize("pmd-report.json") > 0:
+                  with open("pmd-report.json") as f:
+                      try:
+                          data = json.load(f)
+                      except json.JSONDecodeError:
+                          data = []
+              else:
+                  data = []
           
-          # Check if the file exists and has content
-          if os.path.exists("pmd-report.json") and os.path.getsize("pmd-report.json") > 0:
-              with open("pmd-report.json") as f:
-                  try:
-                      data = json.load(f)
-                  except json.JSONDecodeError:
-                      # Handle invalid JSON
-                      data = []
-          else:
-              data = []
+              # Initialize SARIF structure
+              sarif = {
+                  "version": "2.1.0",
+                  "runs": [
+                      {
+                          "tool": {
+                              "driver": {
+                                  "name": "PMD",
+                                  "rules": []
+                              }
+                          },
+                          "results": []
+                      }
+                  ]
+              }
           
-          # Prepare an empty rule set to populate
-          rules_set = set()
-          results = []
+              # Process PMD results
+              rules_dict = {}
           
-          # Handle both array and object format of PMD output
-          if isinstance(data, list):
-              # Handle array format
-              for item in data:
-                  if "violations" in item:
-                      for violation in item.get("violations", []):
-                          rule_id = violation.get("rule", "")
-                          rules_set.add(rule_id)
-                          results.append({
+              if isinstance(data, list):
+                  for item in data:
+                      if "violations" in item:
+                          for v in item.get("violations", []):
+                              rule_id = v.get("rule", "unknown-rule")
+                              if rule_id not in rules_dict:
+                                  rules_dict[rule_id] = {
+                                      "id": rule_id,
+                                      "shortDescription": {
+                                          "text": rule_id
+                                      }
+                                  }
+          
+                              sarif["runs"][0]["results"].append({
+                                  "ruleId": rule_id,
+                                  "level": "warning",
+                                  "message": {
+                                      "text": v.get("description", "")
+                                  },
+                                  "locations": [
+                                      {
+                                          "physicalLocation": {
+                                              "artifactLocation": {
+                                                  "uri": item.get("filename", "")
+                                              },
+                                              "region": {
+                                                  "startLine": v.get("beginline", 1)
+                                              }
+                                          }
+                                      }
+                                  ]
+                              })
+              elif isinstance(data, dict) and "files" in data:
+                  for f in data.get("files", []):
+                      for v in f.get("violations", []):
+                          rule_id = v.get("rule", "unknown-rule")
+                          if rule_id not in rules_dict:
+                              rules_dict[rule_id] = {
+                                  "id": rule_id,
+                                  "shortDescription": {
+                                      "text": rule_id
+                                  }
+                              }
+          
+                          sarif["runs"][0]["results"].append({
                               "ruleId": rule_id,
                               "level": "warning",
-                              "message": {"text": violation.get("description", "")},
-                              "locations": [{
-                                  "physicalLocation": {
-                                      "artifactLocation": {"uri": item.get("filename", "")},
-                                      "region": {"startLine": violation.get("beginline", 1)}
+                              "message": {
+                                  "text": v.get("description", "")
+                              },
+                              "locations": [
+                                  {
+                                      "physicalLocation": {
+                                          "artifactLocation": {
+                                              "uri": f.get("filename", "")
+                                          },
+                                          "region": {
+                                              "startLine": v.get("beginline", 1)
+                                          }
+                                      }
                                   }
-                              }]
+                              ]
                           })
-          elif isinstance(data, dict) and "files" in data:
-              # Handle object format
-              for f in data.get("files", []):
-                  for v in f.get("violations", []):
-                      rule_id = v.get("rule", "")
-                      rules_set.add(rule_id)
-                      results.append({
-                          "ruleId": rule_id,
-                          "level": "warning",
-                          "message": {"text": v.get("description", "")},
-                          "locations": [{
-                              "physicalLocation": {
-                                  "artifactLocation": {"uri": f.get("filename", "")},
-                                  "region": {"startLine": v.get("beginline", 1)}
-                              }
-                          }]
-                      })
           
-          # Create rules array from the set
-          rules = [{"id": rule, "shortDescription": {"text": rule}, "defaultConfiguration": {"level": "warning"}} for rule in rules_set if rule]
+              # Add rules to SARIF
+              sarif["runs"][0]["tool"]["driver"]["rules"] = list(rules_dict.values())
           
-          sarif = {
-              "version": "2.1.0",
-              "runs": [{
-                  "tool": {
-                      "driver": {
-                          "name": "PMD",
-                          "version": "6.55.0",
-                          "informationUri": "https://pmd.github.io/",
-                          "rules": rules
-                      }
-                  },
-                  "results": results
-              }]
-          }
+              # Write SARIF file
+              with open("pmd-report.sarif", "w") as f:
+                  json.dump(sarif, f)
           
-          with open("pmd-report.sarif", "w") as f:
-              json.dump(sarif, f, indent=2)
-          EOF
+              print("Successfully created SARIF file")
+          
+          except Exception as e:
+              print(f"Error creating SARIF file: {e}")
+              # Create a minimal valid SARIF file
+              with open("pmd-report.sarif", "w") as f:
+                  json.dump({
+                      "version": "2.1.0",
+                      "runs": [
+                          {
+                              "tool": {
+                                  "driver": {
+                                      "name": "PMD",
+                                      "rules": []
+                                  }
+                              },
+                              "results": []
+                          }
+                      ]
+                  }, f)
+          EOL
+          
+          python3 create_sarif.py
+
+      - name: Debug SARIF Files
+        run: |
+          echo "### PMD SARIF Content ###"
+          cat pmd-report.sarif | head -20
+          echo "..."
 
       - name: Upload PMD SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: pmd-report.sarif
-          category: pmd-results
-          wait-for-processing: true
+          category: pmd
 
   spotbugs_lint:
     runs-on: ubuntu-latest
@@ -158,101 +216,93 @@ jobs:
           mkdir -p reports/spotbugs
           chmod +x ./spotbugs-4.8.3/bin/spotbugs
           
-          # Check if target/classes contains any .class files
+          # Create a minimal valid SARIF file as a fallback
+          cat > reports/spotbugs/spotbugs.sarif << 'EOL'
+          {"version":"2.1.0","runs":[{"tool":{"driver":{"name":"SpotBugs","rules":[]}},"results":[]}]}
+          EOL
+          
+          # Only run SpotBugs if we have class files
           if [ -n "$(find target/classes -name '*.class' 2>/dev/null)" ]; then
+            # Run SpotBugs and redirect output to a temporary file
             ./spotbugs-4.8.3/bin/spotbugs \
               -textui \
               -pluginList spotbugs-4.8.3/plugin/spotbugs-sarif.jar \
-              -sarif:reports/spotbugs/spotbugs.sarif \
+              -sarif:reports/spotbugs/spotbugs-raw.sarif \
               -effort:max \
               -low \
               target/classes || echo "⚠️ SpotBugs returned non-zero exit"
-          else
-            echo "No class files found to analyze"
-            echo '{
-              "version": "2.1.0",
-              "runs": [{
-                "tool": {
-                  "driver": {
-                    "name": "SpotBugs",
-                    "version": "4.8.3",
-                    "informationUri": "https://spotbugs.github.io/",
-                    "rules": []
-                  }
-                },
-                "results": []
-              }]
-            }' > reports/spotbugs/spotbugs.sarif
+          
+            # Process the SARIF file to ensure compatibility with GitHub
+            cat > fix_spotbugs_sarif.py << 'EOL'
+            #!/usr/bin/env python3
+            import json
+            import os
+          
+            try:
+                if os.path.exists("reports/spotbugs/spotbugs-raw.sarif"):
+                    with open("reports/spotbugs/spotbugs-raw.sarif", "r") as f:
+                        data = json.load(f)
+          
+                    # Create a new minimal structure
+                    sarif = {
+                        "version": "2.1.0",
+                        "runs": [
+                            {
+                                "tool": {
+                                    "driver": {
+                                        "name": "SpotBugs",
+                                        "rules": []
+                                    }
+                                },
+                                "results": []
+                            }
+                        ]
+                    }
+          
+                    # Copy rules and results if they exist
+                    if "runs" in data and data["runs"]:
+                        for run in data["runs"]:
+                            if "tool" in run and "driver" in run["tool"]:
+                                driver = run["tool"]["driver"]
+                                if "rules" in driver:
+                                    # Copy each rule, ensuring it has the minimal required structure
+                                    for rule in driver["rules"]:
+                                        if "id" in rule:
+                                            rule_copy = {
+                                                "id": rule["id"],
+                                                "shortDescription": rule.get("shortDescription", {"text": rule["id"]})
+                                            }
+                                            sarif["runs"][0]["tool"]["driver"]["rules"].append(rule_copy)
+          
+                            if "results" in run:
+                                # Copy each result, ensuring it has the minimal required structure
+                                for result in run["results"]:
+                                    if "ruleId" in result and "locations" in result:
+                                        result_copy = {
+                                            "ruleId": result["ruleId"],
+                                            "level": result.get("level", "warning"),
+                                            "message": result.get("message", {"text": ""}),
+                                            "locations": result["locations"]
+                                        }
+                                        sarif["runs"][0]["results"].append(result_copy)
+          
+                    with open("reports/spotbugs/spotbugs.sarif", "w") as f:
+                        json.dump(sarif, f)
+            except Exception as e:
+                print(f"Error processing SpotBugs SARIF: {e}")
+            EOL
+          
+            python3 fix_spotbugs_sarif.py
           fi
 
-          # Ensure SARIF file exists and has proper format for security scanning
-          if [ ! -f reports/spotbugs/spotbugs.sarif ]; then
-            echo '{
-              "version": "2.1.0",
-              "runs": [{
-                "tool": {
-                  "driver": {
-                    "name": "SpotBugs",
-                    "version": "4.8.3",
-                    "informationUri": "https://spotbugs.github.io/",
-                    "rules": []
-                  }
-                },
-                "results": []
-              }]
-            }' > reports/spotbugs/spotbugs.sarif
-          fi
-          
-          # Validate the SARIF file to ensure it's properly formatted
-          python3 - <<EOF
-          import json
-          import os
-          
-          if os.path.exists("reports/spotbugs/spotbugs.sarif"):
-              try:
-                  with open("reports/spotbugs/spotbugs.sarif", "r") as f:
-                      data = json.load(f)
-          
-                  # Remove $schema if present
-                  if "$schema" in data:
-                      del data["$schema"]
-          
-                  # Ensure tool.driver has version
-                  for run in data.get("runs", []):
-                      tool = run.get("tool", {})
-                      driver = tool.get("driver", {})
-                      if "version" not in driver:
-                          driver["version"] = "4.8.3"
-                      if "informationUri" not in driver:
-                          driver["informationUri"] = "https://spotbugs.github.io/"
-          
-                  # Write back the potentially fixed file
-                  with open("reports/spotbugs/spotbugs.sarif", "w") as f:
-                      json.dump(data, f, indent=2)
-          
-              except Exception as e:
-                  print(f"Error validating SpotBugs SARIF: {e}")
-                  # Create a valid empty SARIF file
-                  with open("reports/spotbugs/spotbugs.sarif", "w") as f:
-                      json.dump({
-                          "version": "2.1.0",
-                          "runs": [{
-                              "tool": {
-                                  "driver": {
-                                      "name": "SpotBugs",
-                                      "version": "4.8.3",
-                                      "informationUri": "https://spotbugs.github.io/",
-                                      "rules": []
-                                  }
-                              },
-                              "results": []
-                          }]
-                      }, f, indent=2)
-          EOF
+      - name: Debug SARIF Files
+        run: |
+          echo "### SpotBugs SARIF Content ###"
+          cat reports/spotbugs/spotbugs.sarif | head -20
+          echo "..."
 
       - name: Upload SpotBugs SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: reports/spotbugs/spotbugs.sarif
-          category: spotbugs-results
-          wait-for-processing: true
+          category: spotbugs
