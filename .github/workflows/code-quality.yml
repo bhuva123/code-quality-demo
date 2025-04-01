@@ -12,7 +12,6 @@ permissions:
 
 env:
   PMD_VERSION: "7.12.0"
-  PMD_CACHE_KEY: "pmd-${{ runner.os }}-${{ env.PMD_VERSION }}"
 
 jobs:
   pmd_lint:
@@ -27,7 +26,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/.pmd/pmd-bin-${{ env.PMD_VERSION }}
-          key: ${{ env.PMD_CACHE_KEY }}
+          key: pmd-${{ env.PMD_VERSION }}-${{ runner.os }}
 
       - name: Install PMD (if not cached)
         if: steps.cache-pmd.outputs.cache-hit != 'true'
@@ -39,7 +38,7 @@ jobs:
           chmod +x ~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd
 
       - name: Set PMD binary path
-        run: echo "PMD_BIN=~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
+        run: echo "PMD_BIN=$HOME/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
         continue-on-error: true
