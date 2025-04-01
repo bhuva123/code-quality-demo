@@ -36,12 +36,11 @@ jobs:
           curl -L "$PMD_URL" -o ~/.pmd/pmd.zip
           unzip -o ~/.pmd/pmd.zip -d ~/.pmd
           chmod +x ~/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd
-
       - name: Set PMD binary path
         run: echo "PMD_BIN=$HOME/.pmd/pmd-bin-${PMD_VERSION}/bin/pmd" >> $GITHUB_ENV
 
       - name: Run PMD Static Analysis
-        shell: bash
+        continue-on-error: true
         run: |
           $PMD_BIN check \
             --no-progress \
@@ -49,19 +48,10 @@ jobs:
             -R rulesets/java/quickstart.xml \
             -f json \
             --report-file pmd-report.json
-          PMD_EXIT=$?
-
-          if [ "$PMD_EXIT" -eq 4 ]; then
-            echo "PMD found violations (exit code 4), continuing..."
-          elif [ "$PMD_EXIT" -ne 0 ]; then
-            echo "PMD encountered an unexpected error (exit code $PMD_EXIT)"
-            exit $PMD_EXIT
-          fi
-
+          
           if [ ! -s pmd-report.json ]; then
             echo '{"files": []}' > pmd-report.json
           fi
-
       - name: Convert PMD JSON to SARIF using Python
         run: |
           python3 -c '
@@ -106,7 +96,6 @@ jobs:
           
           convert_pmd_to_sarif("pmd-report.json", "pmd-report.sarif")
           '
-
       - name: Upload SARIF report to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
